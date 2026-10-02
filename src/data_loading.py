@@ -68,6 +68,50 @@ def load_test_rul(dataset: str, cfg: dict) -> pd.Series:
     return vals
 
 
+# Offset added to unit_number when combining sub-datasets, so engine IDs
+# stay unique across FD001-FD004 (each sub-dataset numbers its own
+# engines starting at 1). Spacing of 1000 comfortably covers FD002's
+# largest engine count (260).
+DATASET_OFFSETS = {"FD001": 0, "FD002": 1000, "FD003": 2000, "FD004": 3000}
+
+
+def load_combined_train(datasets: list[str], cfg: dict) -> pd.DataFrame:
+    """Load and concatenate train_<X>.txt for each dataset in `datasets`,
+    remapping unit_number so engines from different sub-datasets never
+    collide, and tagging each row with which sub-dataset it came from."""
+    frames = []
+    for ds in datasets:
+        df = load_train(ds, cfg)
+        df = df.copy()
+        df["unit_number"] = df["unit_number"] + DATASET_OFFSETS[ds]
+        df["source_dataset"] = ds
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+
+def load_combined_test(datasets: list[str], cfg: dict) -> pd.DataFrame:
+    frames = []
+    for ds in datasets:
+        df = load_test(ds, cfg)
+        df = df.copy()
+        df["unit_number"] = df["unit_number"] + DATASET_OFFSETS[ds]
+        df["source_dataset"] = ds
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+
+def load_combined_test_rul(datasets: list[str], cfg: dict) -> pd.Series:
+    """Same as load_test_rul, but combined and reindexed to match the
+    offset unit_numbers used by load_combined_test."""
+    parts = []
+    for ds in datasets:
+        rul = load_test_rul(ds, cfg)
+        rul = rul.copy()
+        rul.index = rul.index + DATASET_OFFSETS[ds]
+        parts.append(rul)
+    return pd.concat(parts)
+
+
 def drop_low_variance_sensors(df: pd.DataFrame, sensor_cols: list[str],
                                tol: float = 1e-6) -> tuple[pd.DataFrame, list[str]]:
     """Drop sensor columns with ~zero variance (uninformative on this

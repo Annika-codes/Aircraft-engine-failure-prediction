@@ -28,7 +28,9 @@ modes). It is not bundled in this repo — download it yourself:
 - Kaggle: search "NASA Turbofan Jet Engine Data Set"
 
 Place the raw `train_FD00X.txt`, `test_FD00X.txt`, and
-`RUL_FD00X.txt` files in `data/raw/`.
+`RUL_FD00X.txt` files in `data/raw/`. You can use just FD001 (the
+default), or download all four to train on the combined dataset (see
+"Training on more data" below).
 
 ## Setup
 
@@ -61,12 +63,15 @@ src/
   data_loading.py  parse raw C-MAPSS text files into DataFrames
   rul_labels.py    compute Remaining Useful Life labels (with clipping)
   features.py      rolling-window sensor features, degradation slopes
+  sensor_names.py  human-readable sensor names/categories (from NASA docs)
+  op_regimes.py    operating-condition regime clustering + normalization (for combined training)
   scoring.py        RMSE/MAE + the PHM08 asymmetric scoring function
-  train.py         trains point (median) + quantile (10/90%) models
-  predict.py       inference pipeline: point estimate + interval + risk tier
-  dashboard.py     Streamlit fleet risk dashboard
-main.py            CLI entry point (train / evaluate)
-tests/             sanity tests for the scoring function and RUL labels
+  classification.py binary failure-risk classifier + accuracy/precision/recall/F1
+  train.py         trains point (median) + quantile (10/90%) + classifier models, single or combined
+  predict.py       inference: point estimate + interval + failure probability + risk tier
+  dashboard.py     Streamlit dashboard: fleet view, prediction card, model performance
+main.py            CLI entry point (train / evaluate, --dataset FD001 or ALL)
+tests/             unit tests for scoring, labels, classification, sensor mapping, regimes
 config.yaml        dataset paths, feature + model hyperparameters
 ```
 
@@ -76,6 +81,8 @@ Verified end-to-end against the actual C-MAPSS FD001 train/test files
 (trained only on `train_FD001.txt`, scored against the true `RUL_FD001.txt`
 labels — no leakage):
 
+**Regression (Remaining Useful Life):**
+
 | Metric | Value |
 |---|---|
 | RMSE | 15.77 |
@@ -83,11 +90,67 @@ labels — no leakage):
 | PHM08 score (lower is better) | 554.13 |
 | 80% interval coverage | 77.0% (target ~80%) |
 
+**Classification (failure-risk: RUL < 30 cycles = "Failure"):**
+
+| Metric | Value |
+|---|---|
+| Accuracy | 95.0% |
+| Precision | 91.7% |
+| Recall | 88.0% |
+| F1 score | 89.8% |
+
 For reference, a plain XGBoost-on-rolling-features baseline without the
 quantile/interval or PHM08 layers (e.g. the common tutorial-style version
 of this project) typically reports RMSE in the mid-30s on this same test
 split. The gap here comes mainly from the rolling-window + slope features
 and standard RUL clipping, not from anything exotic.
+
+## Training on more data (combined FD001–FD004)
+
+By default, `train`/`evaluate` use a single sub-dataset (FD001). You can
+also train on several combined, up to all four at once, for a much
+larger and more varied dataset:
+
+```bash
+python main.py train --dataset ALL           # all 4 sub-datasets combined
+python main.py train --dataset FD001,FD003   # any comma-separated subset
+python main.py evaluate --dataset ALL
+```
+
+Combined totals across FD001–FD004: **~709 training engines / ~160,000
+training rows**, **~707 test engines / ~105,000 test rows**.
+
+FD002 and FD004 run under 6 distinct operating conditions (different
+altitude/Mach/throttle combinations), unlike FD001/FD003's single
+condition — a sensor's raw reading shifts with the flight condition
+itself, on top of any change from wear. Training on the combined data
+without accounting for this would genuinely hurt accuracy, not just
+add noise. `src/op_regimes.py` clusters the operating-condition columns
+into regimes and z-score normalizes each sensor within its own regime
+(fit on training data, reused identically at inference) — standard
+practice in the published RUL literature on this dataset, not just an
+extra step for its own sake. Verified on this exact pipeline:
+
+| | RMSE | MAE |
+|---|---|---|
+| Combined, without regime normalization | 17.46 | 12.98 |
+| Combined, with regime normalization | 15.85 | 11.29 |
+
+**Results, all 4 combined (707 held-out test engines):**
+
+| Metric | Value |
+|---|---|
+| RMSE | 15.85 |
+| MAE | 11.29 |
+| PHM08 score | 4095.14 |
+| 80% interval coverage | 84.0% |
+| Classifier accuracy | 96.0% |
+| Classifier precision / recall / F1 | 90.6% / 91.7% / 91.1% |
+
+Notably, accuracy on the combined set is close to FD001 alone despite
+FD002/FD004 being substantially harder (multiple fault modes *and*
+multiple operating conditions) — the regime normalization is doing
+real work here, not just adding complexity.
 
 ## Method notes
 
@@ -102,3 +165,17 @@ and standard RUL clipping, not from anything exotic.
   with quantile (pinball) loss at the 10th and 90th percentiles.
 - "Risk tier" in the dashboard = a simple mapping from predicted RUL
   and interval width to {Safe, Watch, Urgent}, not a separate model.
+- Failure-risk classification is a second, complementary model (XGBoost
+  classifier) trained on the same features, with the label derived from
+  RUL (< 30 cycles remaining = "Failure"). It's not literally a
+  different kind of failure data -- it's the same ground truth reframed
+  as a binary risk call, which is what lets the dashboard show
+  accuracy/precision/recall/F1 and a confusion matrix alongside the
+  regression metrics.
+- The dataset's 21 sensors are documented in NASA's own C-MAPSS
+  materials and are temperature, pressure, speed, and fuel-flow
+  measurements -- there is no vibration sensor in this dataset, so the
+  dashboard's "top contributing sensor categories" chart groups by the
+  categories that actually exist (Temperature/Pressure/Speed/Fuel
+  Flow/Other), not by category names borrowed from a different sensor
+  suite.

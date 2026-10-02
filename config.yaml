@@ -52,6 +52,9 @@ model:
     n_estimators: 300
     max_depth: 5
     learning_rate: 0.05
+  # RUL below this = classified as "Failure" (high risk) for the
+  # classification view (accuracy/precision/recall/F1/confusion matrix)
+  failure_threshold: 30
 
 dashboard:
   risk_tiers:
